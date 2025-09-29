@@ -2,35 +2,23 @@
 
 **If you're that lazy...**
 
-A simple Ashita v4 addon to quickly check where Di is on any FFXI server using the [whereisdi.com](https://whereisdi.com) API.
-
-## Features
-
-- Shows Di's location and time since last update for your selected server.
-- View all server statuses at once.
-- Save your preferred server for quick queries.
+A simple Ashita v4 addon to quickly check where DI is on any FFXI server using the [whereisdi.com](https://whereisdi.com) API.
 
 ## Usage
+
+You can either use `/di` or `/whereisdi` to interact with the addon
 
 ### Set your preferred server:
 ```
 /di setserver <ServerName>
 ```
 
-### Check Di's status for your server:
+### Check DI status for your server:
 ```
 /di
 ```
 
-### Check Di's status for all servers:
+### Check DI status for all servers:
 ```
 /di all
-```
-
-## Example
-
-```
-/di setserver Asura
-/di
-Asura: South Gustaberg (just now)
 ```
