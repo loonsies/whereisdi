@@ -1,5 +1,5 @@
 addon.name = 'whereisdi'
-addon.version = '0.1'
+addon.version = '0.2'
 addon.author = 'looney'
 addon.desc = 'If you\'re that lazy...'
 addon.link = 'https://github.com/loonsies/whereisdi'
@@ -9,32 +9,32 @@ local settings = require('settings')
 local config = require('config')
 local chat = require('chat')
 local json = require('json')
-local http = require('socket.http')
-local ltn12 = require('socket.ltn12')
+local nonBlockingRequests = require('nonBlockingRequests')
 
 local token = 'Bearer 82j1GCjQxUCxriN-XhXicb6Ts8G400l7'
 local cfg = {}
 
-local function getBaseUrl(url)
-    return url:match('^(https?://[^/]+)')
-end
-
-local function fetchDiApi()
-    local response_body = {}
-    local _, status = http.request {
-        url = 'https://api.whereisdi.com/items/di?fields=*.*',
-        method = 'GET',
-        headers = {
-            ['Authorization'] = token,
-            ['Accept'] = 'application/json'
-        },
-        sink = ltn12.sink.table(response_body)
+local function fetchDiApiAsync(callback)
+    local headers = {
+        ['Authorization'] = token,
+        ['Accept'] = 'application/json'
     }
-    if status ~= 200 then
-        print(chat.header(addon.name):append(chat.error('API HTTP error: ' .. tostring(status))))
-        return nil
-    end
-    return table.concat(response_body)
+
+    nonBlockingRequests.get('https://api.whereisdi.com/items/di?fields=*.*', headers, function (body, error, statusCode)
+        if error then
+            print(chat.header(addon.name):append(chat.error('API request failed: ' .. tostring(error))))
+            callback(nil)
+            return
+        end
+
+        if statusCode ~= 200 then
+            print(chat.header(addon.name):append(chat.error('API HTTP error: ' .. tostring(statusCode))))
+            callback(nil)
+            return
+        end
+
+        callback(body)
+    end)
 end
 
 local function iso8601_to_unix(str)
@@ -59,10 +59,8 @@ local function iso8601_to_unix(str)
     })
 end
 
-local function printStatus(filter_server)
-    local raw = fetchDiApi()
-    if not raw then return end
-    local decoded, _, err = json.decode(raw)
+local function printStatusFromData(data, filter_server)
+    local decoded, _, err = json.decode(data)
     if not decoded or not decoded.data then
         print(chat.header(addon.name):append(chat.error('JSON decode failed: ' .. tostring(err))))
         return
@@ -101,47 +99,13 @@ local function printStatus(filter_server)
     end
 end
 
-local function fetchUrl(url)
-    local maxRedirects = 5
-    local redirects = 0
-
-    while redirects < maxRedirects do
-        local response_body = {}
-        local _, statusCode, headers = http.request {
-            url = url,
-            sink = ltn12.sink.table(response_body)
-        }
-
-        local body = table.concat(response_body)
-
-        if not body then
-            print(chat.header(addon.name):append(chat.error('HTTP request failed')))
-            return nil, statusCode, headers
+local function printStatus(filter_server)
+    fetchDiApiAsync(function (data)
+        if data then
+            printStatusFromData(data, filter_server)
         end
-
-        if statusCode >= 300 and statusCode < 400 then
-            local location = headers.location
-            if type(location) ~= 'string' then
-                print(chat.header(addon.name):append(chat.error('Redirect status but no Location header')))
-                return nil, statusCode, headers
-            end
-
-            if not location:match('^https?://') then
-                local base = getBaseUrl(url)
-                location = base .. location
-            end
-
-            url = location
-            redirects = redirects + 1
-        else
-            return body, statusCode, headers
-        end
-    end
-
-    print(chat.header(addon.name):append(chat.error('Too many redirections')))
-    return nil, nil, nil
+    end)
 end
-
 
 ashita.events.register('command', 'command_cb', function (cmd, nType)
     local args = cmd.command:args()
@@ -175,6 +139,9 @@ ashita.events.register('command', 'command_cb', function (cmd, nType)
     end
 end)
 
+ashita.events.register('d3d_present', 'd3d_present_cb', function ()
+    nonBlockingRequests.processAll()
+end)
 
 ashita.events.register('load', 'load_cb', function ()
     cfg = config.load()
