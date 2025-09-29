@@ -9,12 +9,14 @@ local settings = require('settings')
 local config = require('config')
 local chat = require('chat')
 local json = require('json')
-local nonBlockingRequests = require('nonBlockingRequests')
+local nonBlockingRequests = require('libs/nonBlockingRequests')
 
 local token = 'Bearer 82j1GCjQxUCxriN-XhXicb6Ts8G400l7'
 local cfg = {}
 
 local function fetchDiApiAsync(callback)
+    print(chat.header(addon.name):append(chat.warning('Fetching Domain Invasion status...')))
+
     local headers = {
         ['Authorization'] = token,
         ['Accept'] = 'application/json'
