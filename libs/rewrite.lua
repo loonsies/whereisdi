@@ -6,7 +6,7 @@ local ssl = require('socket.ssl')
 
 local nonBlockingRequests = {}
 
-local DEBUG = false
+local DEBUG = true
 local READ_CHUNK_SIZE = 8192
 local MAX_REDIRECTS = 5
 
@@ -171,42 +171,29 @@ local function cleanupRequest(request)
     end
     request.cleaningUp = true
 
-    -- Track how many handles need to close before we can close the socket
-    local handlesToClose = 0
-    local socket = request.socket
-    
-    local function tryCloseSocket()
-        handlesToClose = handlesToClose - 1
-        if handlesToClose == 0 and socket then
-            pcall(socket.close, socket)
+    if request.pollHandle then
+        if not uv.is_closing(request.pollHandle) then
+            pcall(uv.poll_stop, request.pollHandle)
+            uv.close(request.pollHandle)
         end
-    end
-
-    -- Stop and close poll handle
-    if request.pollHandle and not uv.is_closing(request.pollHandle) then
-        handlesToClose = handlesToClose + 1
-        pcall(uv.poll_stop, request.pollHandle)
-        uv.close(request.pollHandle, tryCloseSocket)
         request.pollHandle = nil
     end
 
-    -- Stop and close timer handle
-    if request.timeoutTimer and not uv.is_closing(request.timeoutTimer) then
-        handlesToClose = handlesToClose + 1
-        pcall(uv.timer_stop, request.timeoutTimer)
-        uv.close(request.timeoutTimer, tryCloseSocket)
+    if request.timeoutTimer then
+        if not uv.is_closing(request.timeoutTimer) then
+            pcall(uv.timer_stop, request.timeoutTimer)
+            uv.close(request.timeoutTimer)
+        end
         request.timeoutTimer = nil
     end
 
-    -- If no handles to close, close socket immediately
-    if handlesToClose == 0 and socket then
-        pcall(socket.close, socket)
+    if request.socket then
+        pcall(request.socket.close, request.socket)
+        request.socket = nil
     end
-    
-    request.socket = nil
+
     request.requestData = nil
     request.responseBody = nil
-    request.readBuffer = nil
 end
 
 local function resetForRedirect(request)
@@ -540,7 +527,61 @@ local function tryHandshake(request)
     end
 end
 
-local function tryConnect(request)
+local tryConnect
+local startPolling
+
+local function onPollEvent(request, err, events)
+    if request.cleaningUp or request.state == REQUEST_STATE.ERROR or request.state == REQUEST_STATE.COMPLETE then
+        return
+    end
+
+    if err then
+        failRequest(request, 'Poll error: ' .. err)
+        completeRequest(request)
+        return
+    end
+
+    log(request, 'Poll event in state: ' .. request.state)
+
+    if request.state == REQUEST_STATE.CONNECTING then
+        tryConnect(request)
+    elseif request.state == REQUEST_STATE.SSL_HANDSHAKE then
+        tryHandshake(request)
+    elseif request.state == REQUEST_STATE.SENDING_REQUEST then
+        tryWrite(request)
+    elseif request.state == REQUEST_STATE.RECEIVING_STATUS or
+        request.state == REQUEST_STATE.RECEIVING_HEADERS or
+        request.state == REQUEST_STATE.RECEIVING_BODY then
+        tryRead(request)
+    end
+end
+
+startPolling = function (request)
+    local fd = request.socket:getfd()
+    if fd < 0 then
+        failRequest(request, 'Invalid socket file descriptor')
+        completeRequest(request)
+        return
+    end
+
+    request.pollHandle = uv.new_socket_poll(fd)
+    if not request.pollHandle then
+        failRequest(request, 'Failed to create poll handle')
+        completeRequest(request)
+        return
+    end
+
+    local success, err = pcall(uv.poll_start, request.pollHandle, 'rw', function (poll_err, events)
+        onPollEvent(request, poll_err, events)
+    end)
+
+    if not success then
+        failRequest(request, 'Failed to start polling: ' .. tostring(err))
+        completeRequest(request)
+    end
+end
+
+tryConnect = function (request)
     if not request.socket then
         return
     end
@@ -581,64 +622,12 @@ local function tryConnect(request)
             request.state = REQUEST_STATE.SENDING_REQUEST
         end
     elseif err == 'timeout' then
-        log(request, 'Connect timeout, will retry on poll event')
+        log(request, 'Connect timeout, setting up polling')
+        if not request.pollHandle then
+            startPolling(request)
+        end
     else
         failRequest(request, 'Connection failed: ' .. (err or 'unknown'))
-        completeRequest(request)
-    end
-end
-
-local function onPollEvent(request, err, events)
-    if not request or request.cleaningUp or request.state == REQUEST_STATE.ERROR or request.state == REQUEST_STATE.COMPLETE then
-        return
-    end
-
-    if not activeRequests[request.id] then
-        return
-    end
-
-    if err then
-        failRequest(request, 'Poll error: ' .. err)
-        completeRequest(request)
-        return
-    end
-
-    log(request, 'Poll event in state: ' .. request.state)
-
-    if request.state == REQUEST_STATE.CONNECTING then
-        tryConnect(request)
-    elseif request.state == REQUEST_STATE.SSL_HANDSHAKE then
-        tryHandshake(request)
-    elseif request.state == REQUEST_STATE.SENDING_REQUEST then
-        tryWrite(request)
-    elseif request.state == REQUEST_STATE.RECEIVING_STATUS or
-        request.state == REQUEST_STATE.RECEIVING_HEADERS or
-        request.state == REQUEST_STATE.RECEIVING_BODY then
-        tryRead(request)
-    end
-end
-
-local function startPolling(request)
-    local fd = request.socket:getfd()
-    if fd < 0 then
-        failRequest(request, 'Invalid socket file descriptor')
-        completeRequest(request)
-        return
-    end
-
-    request.pollHandle = uv.new_socket_poll(fd)
-    if not request.pollHandle then
-        failRequest(request, 'Failed to create poll handle')
-        completeRequest(request)
-        return
-    end
-
-    local success, err = pcall(uv.poll_start, request.pollHandle, 'rw', function (poll_err, events)
-        onPollEvent(request, poll_err, events)
-    end)
-
-    if not success then
-        failRequest(request, 'Failed to start polling: ' .. tostring(err))
         completeRequest(request)
     end
 end
@@ -659,23 +648,11 @@ local function connectToHost(request, ip)
 
     request.timeoutTimer = uv.new_timer()
     uv.timer_start(request.timeoutTimer, 15000, 0, function ()
-        if not request or request.cleaningUp or not activeRequests[request.id] then
-            return
-        end
         failRequest(request, 'Connection timeout')
         completeRequest(request)
     end)
 
-    local result, err = request.socket:connect(ip, request.parsedUrl.port)
-    
-    if result == 1 or err == 'already connected' then
-        tryConnect(request)
-    elseif err == 'timeout' then
-        startPolling(request)
-    else
-        failRequest(request, 'Connection failed: ' .. (err or 'unknown'))
-        completeRequest(request)
-    end
+    tryConnect(request)
 end
 
 function startRequest(request)
@@ -687,10 +664,6 @@ function startRequest(request)
     log(request, 'Resolving ' .. request.parsedUrl.host)
 
     uv.getaddrinfo(request.parsedUrl.host, nil, { socktype = 'stream' }, function (err, addresses)
-        if not request or request.cleaningUp or not activeRequests[request.id] then
-            return
-        end
-        
         if err then
             failRequest(request, 'DNS resolution failed: ' .. err)
             completeRequest(request)

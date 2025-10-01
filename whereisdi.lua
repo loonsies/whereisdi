@@ -1,5 +1,5 @@
 addon.name = 'whereisdi'
-addon.version = "0.2"
+addon.version = '0.2'
 addon.author = 'looney'
 addon.desc = 'If you\'re that lazy...'
 addon.link = 'https://github.com/loonsies/whereisdi'
