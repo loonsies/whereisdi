@@ -174,7 +174,7 @@ local function cleanupRequest(request)
     -- Track how many handles need to close before we can close the socket
     local handlesToClose = 0
     local socket = request.socket
-    
+
     local function tryCloseSocket()
         handlesToClose = handlesToClose - 1
         if handlesToClose == 0 and socket then
@@ -202,7 +202,7 @@ local function cleanupRequest(request)
     if handlesToClose == 0 and socket then
         pcall(socket.close, socket)
     end
-    
+
     request.socket = nil
     request.requestData = nil
     request.responseBody = nil
@@ -667,7 +667,7 @@ local function connectToHost(request, ip)
     end)
 
     local result, err = request.socket:connect(ip, request.parsedUrl.port)
-    
+
     if result == 1 or err == 'already connected' then
         tryConnect(request)
     elseif err == 'timeout' then
@@ -690,7 +690,7 @@ function startRequest(request)
         if not request or request.cleaningUp or not activeRequests[request.id] then
             return
         end
-        
+
         if err then
             failRequest(request, 'DNS resolution failed: ' .. err)
             completeRequest(request)
